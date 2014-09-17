@@ -53,11 +53,6 @@ fn test_boundaries() {
 }
 
 #[test]
-fn test_borrowed() {
-	assert_eq!(borrowed("abcd"), Ok("abcd"));
-}
-
-#[test]
 fn test_block() {
-	assert_eq!(block("foo"), Ok("foo"));
+	assert_eq!(block("foo"), Ok(3));
 }

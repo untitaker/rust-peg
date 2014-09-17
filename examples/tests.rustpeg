@@ -37,12 +37,8 @@ boundaries -> String
 	= "foo" { match_str.to_string() }
 
 #[export]
-borrowed -> &str
-	= [a-z]+ { match_str }
-
-#[export]
-block -> &str
+block -> uint
 	= [a-z]+ {
-		let result = match_str;
+		let result = match_str.len();
 		result
 	}
