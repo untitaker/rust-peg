@@ -85,19 +85,32 @@ pub fn header_items(ctxt: &rustast::ExtCtxt) -> Vec<rustast::P<rustast::Item>> {
 	items.push(quote_item!(ctxt,
 		struct ParseState {
 			max_err_pos: uint,
+			expected: Vec<&'static str>,
 		}
 	).unwrap());
 
 	items.push(quote_item!(ctxt,
 		impl ParseState {
 			fn new() -> ParseState {
-				ParseState{ max_err_pos: 0 }
+				ParseState{ max_err_pos: 0, expected: Vec::new() }
+			}
+			fn mark_failure(&mut self, pos: uint, expected: &'static str) -> ParseResult<()> {
+				if pos < self.max_err_pos { return Failed; }
+
+				if pos > self.max_err_pos {
+					self.max_err_pos = pos;
+					self.expected.clear();
+				}
+
+				self.expected.push(expected);
+
+				Failed
 			}
 		}
 	).unwrap());
 
 	items.push(quote_item!(ctxt,
-		fn slice_eq(input: &str, pos: uint, m: &str) -> ParseResult<()> {
+		fn slice_eq(input: &str, state: &mut ParseState, pos: uint, m: &'static str) -> ParseResult<()> {
 			#![inline]
 			#![allow(dead_code)]
 
@@ -105,21 +118,20 @@ pub fn header_items(ctxt: &rustast::ExtCtxt) -> Vec<rustast::P<rustast::Item>> {
 	    if input.len() >= pos + l && input.as_bytes().slice(pos, pos+l) == m.as_bytes() {
 	      Matched(pos+l, ())
 	    } else {
-
-				Failed
+	      state.mark_failure(pos, m)
 	    }
 		}
 	).unwrap());
 
 	items.push(quote_item!(ctxt,
-		fn any_char(input: &str, pos: uint) -> ParseResult<()> {
+		fn any_char(input: &str, state: &mut ParseState, pos: uint) -> ParseResult<()> {
 			#![inline]
 			#![allow(dead_code)]
 
 			if input.len() > pos {
 				Matched(input.char_range_at(pos).next, ())
 			} else {
-				Failed
+				state.mark_failure(pos, "<character>")
 			}
 		}
 	).unwrap());
@@ -165,13 +177,12 @@ fn compile_rule_export(ctxt: &rustast::ExtCtxt, rule: &Rule) -> rustast::P<rusta
 			match $parse_fn(input, &mut state, 0) {
 				Matched(pos, value) => {
 					if pos == input.len() {
-						Ok(value)
-					} else {
-						Err(format!("Expected end of input at {}", pos_to_line(input, pos)))
+						return Ok(value)
 					}
 				}
-				Failed => Err(format!("Error at ?"))
+				_ => {}
 			}
+			Err(format!("Error at {}: Expected {}", pos_to_line(input, state.max_err_pos), state.expected))
 		}
 	)).unwrap()
 }
@@ -201,22 +212,29 @@ fn cond_swap<T>(swap: bool, tup: (T, T)) -> (T, T) {
 	}
 }
 
+fn format_char_set(_: &[CharSetCase]) -> String {
+	"[]".to_string() // TODO
+}
+
 #[allow(unused_imports)] // quote_tokens! imports things
 fn compile_expr(ctxt: &rustast::ExtCtxt, e: &Expr, result_used: bool) -> rustast::P<rustast::Expr> {
 	match *e {
 		AnyCharExpr => {
-			quote_expr!(ctxt, any_char(input, pos))
+			quote_expr!(ctxt, any_char(input, state, pos))
 		}
 
 		LiteralExpr(ref s) => {
 			let sl = s.as_slice();
-			quote_expr!(ctxt, slice_eq(input, pos, $sl))
+			quote_expr!(ctxt, slice_eq(input, state, pos, $sl))
 		}
 
 		CharSetExpr(invert, ref cases) => {
+			let fail_string = format_char_set(cases.as_slice());
+			let fail_str = fail_string.as_slice();
+
 			let (in_set, not_in_set) = cond_swap(invert, (
 				quote_expr!(ctxt, Matched(next, ())),
-				quote_expr!(ctxt, Failed),
+				quote_expr!(ctxt, state.mark_failure(pos, $fail_str)),
 			));
 
 			let m = ctxt.expr_match(DUMMY_SP, quote_expr!(ctxt, ch), vec!(
@@ -237,7 +255,7 @@ fn compile_expr(ctxt: &rustast::ExtCtxt, e: &Expr, result_used: bool) -> rustast
 				let ::std::str::CharRange {ch, next} = input.char_range_at(pos);
 				$m
 			} else {
-				Failed
+				state.mark_failure(pos, $fail_str)
 			})
 		}
 
